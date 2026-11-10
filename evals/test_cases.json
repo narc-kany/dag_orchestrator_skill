@@ -1,0 +1,218 @@
+{
+  "version": "1.0.0",
+  "description": "End-to-end test vectors for dag_orchestrator_skill. Executed by evals/red_team_modes.py (test_vectors). RAG chunks are materialised from chunk_specs into the payload.chunks of the named node using the reference corpus; tamper values: sha, text, doc. Quality gates (coverage, selective accuracy, ECE) are NOT asserted here because some vectors abstain by design; they are verified on a seeded synthetic calibration set.",
+  "defaults": {
+    "request": {
+      "tenant_id": "tenant-acme",
+      "entity_id": "ACME",
+      "as_of_timestamp": "2026-01-15T12:00:00Z",
+      "policy_version": "2026.01"
+    }
+  },
+  "cases": [
+    {
+      "id": "case_1_zero_hop_canonical_bypass",
+      "description": "All required facts are already canonical in the execution context. No subtask may be dispatched.",
+      "request": {
+        "request_id": "tc-1",
+        "query": "What is the current exposure for ACME and its 95% VaR?",
+        "precomputed_facts": {"exposure_usd": 4200000, "var_95_usd": 310000},
+        "required_fact_keys": ["exposure_usd", "var_95_usd"]
+      },
+      "plan": {"request_id": "tc-1", "zero_hop": true, "rationale": "Facts already canonical.", "nodes": []},
+      "expected": {
+        "zero_hop": true,
+        "waves": 0,
+        "canonical_facts": {"exposure_usd": 4200000, "var_95_usd": 310000},
+        "triggered_rule_ids": [],
+        "abstained_claim_ids": [],
+        "tool_calls": {"tool_core_compute": 0, "tool_policy_ast": 0, "tool_hybrid_rag": 0}
+      }
+    },
+    {
+      "id": "case_2_three_wave_diamond_families_1_2_5",
+      "description": "Wave 0: compute exposure in parallel with RAG over Policy Families 1, 2 and 5. Wave 1: AST over bound exposure. Wave 2: dependent guardrail evaluation using a wave-1 output ref.",
+      "request": {
+        "request_id": "tc-2",
+        "query": "Does ACME exposure breach the risk threshold and does the guardrail allow the re-price?"
+      },
+      "plan": {
+        "request_id": "tc-2",
+        "zero_hop": false,
+        "rationale": "Diamond DAG.",
+        "nodes": [
+          {"task_id": "core_exposure", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 600, "payload": {"facts": {"exposure_usd": 4200000}}},
+          {"task_id": "rag_families", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 800, "payload": {"query": "risk and pricing", "family_ids": [1, 2, 5], "baseline_rules": [], "bindings": {}}},
+          {"task_id": "ast_eval", "tool": "tool_policy_ast", "dependencies": ["core_exposure", "rag_families"], "timeout_ms": 600, "idempotent": true, "priority": 1, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 500, "payload": {"rules": [{"rule_identity_id": 121, "predicate": {"binding": "exposure_usd", "op": ">", "value": 1000000}}], "bindings": {"exposure_usd": "$ref:$.waves.0.core_exposure.output.facts.exposure_usd"}}},
+          {"task_id": "ast_guardrail", "tool": "tool_policy_ast", "dependencies": ["ast_eval"], "timeout_ms": 600, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 450, "payload": {"rules": [{"rule_identity_id": 180, "predicate": {"binding": "breach", "op": "==", "value": true}}], "bindings": {"breach": "$ref:$.waves.1.ast_eval.output.evaluations.0.verdict|default=false"}}}
+        ]
+      },
+      "chunk_specs": {
+        "rag_families": [
+          {"rule_identity_id": 57, "confidence": 0.93, "rule_verdict": true},
+          {"rule_identity_id": 58, "confidence": 0.91, "rule_verdict": true, "claims": {"exposure_usd": 4200000}},
+          {"rule_identity_id": 124, "confidence": 0.9, "rule_verdict": false}
+        ]
+      },
+      "expected": {
+        "zero_hop": false,
+        "waves": 3,
+        "canonical_facts": {"exposure_usd": 4200000},
+        "triggered_rule_ids": [57, 58, 121, 180],
+        "policy_families_covered": [1, 2, 5],
+        "anomaly_kinds": [],
+        "conflicts": [],
+        "degraded_services": [],
+        "ledger_size": 4
+      }
+    },
+    {
+      "id": "case_3_over_budget_pruning",
+      "description": "T_critical = 3450 ms. Priority 5 enrichment is pruned and priority 4 enrichment is downgraded to its cached fast path, bringing T_critical to 2400 ms.",
+      "request": {"request_id": "tc-3", "query": "Full exposure review for ACME with extended market enrichment."},
+      "plan": {
+        "request_id": "tc-3",
+        "zero_hop": false,
+        "rationale": "Over-budget natural plan.",
+        "nodes": [
+          {"task_id": "core", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 650, "payload": {"facts": {"exposure_usd": 4200000}}},
+          {"task_id": "rag", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 800, "payload": {"query": "exposure review", "family_ids": [1, 2], "baseline_rules": [], "bindings": {}}},
+          {"task_id": "market_enrich_a", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 1500, "idempotent": true, "priority": 4, "failure_policy": "IGNORE_OPTIONAL", "estimated_latency_ms": 1450, "fast_path_latency_ms": 100, "payload": {"query": "extended market enrichment", "family_ids": [2]}},
+          {"task_id": "ast", "tool": "tool_policy_ast", "dependencies": ["core", "rag"], "timeout_ms": 900, "idempotent": true, "priority": 1, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 700, "payload": {"rules": [{"rule_identity_id": 121, "predicate": {"binding": "exposure_usd", "op": ">", "value": 1000000}}], "bindings": {"exposure_usd": "$ref:$.waves.0.core.output.facts.exposure_usd"}}},
+          {"task_id": "market_enrich_b", "tool": "tool_hybrid_rag", "dependencies": ["market_enrich_a"], "timeout_ms": 1200, "idempotent": true, "priority": 5, "failure_policy": "IGNORE_OPTIONAL", "estimated_latency_ms": 1100, "payload": {"query": "second-order enrichment", "family_ids": [2]}},
+          {"task_id": "ast_final", "tool": "tool_policy_ast", "dependencies": ["ast"], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 900, "payload": {"rules": [], "bindings": {}}}
+        ]
+      },
+      "expected": {
+        "zero_hop": false,
+        "waves": 3,
+        "t_critical_before_ms": 3450,
+        "t_critical_after_ms": 2400,
+        "pruned_nodes": ["market_enrich_b"],
+        "downgraded_nodes": ["market_enrich_a"],
+        "triggered_rule_ids": [121]
+      }
+    },
+    {
+      "id": "case_4_tier1_compute_vs_tier3_rag_contradiction",
+      "description": "A verified RAG chunk asserts exposure_usd = 1,000,000 while Tier 1 compute says 4,200,000. Tier 1 wins; the chunk is dropped and a ConflictResolution is recorded.",
+      "request": {"request_id": "tc-4", "query": "Current exposure and breach status for ACME?"},
+      "plan": {
+        "request_id": "tc-4",
+        "zero_hop": false,
+        "rationale": "Compute, retrieve, evaluate.",
+        "nodes": [
+          {"task_id": "core", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 600, "payload": {"facts": {"exposure_usd": 4200000}}},
+          {"task_id": "rag", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 800, "payload": {"query": "exposure", "family_ids": [2], "baseline_rules": [], "bindings": {}}},
+          {"task_id": "ast", "tool": "tool_policy_ast", "dependencies": ["core", "rag"], "timeout_ms": 600, "idempotent": true, "priority": 1, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 500, "payload": {"rules": [{"rule_identity_id": 121, "predicate": {"binding": "exposure_usd", "op": ">", "value": 1000000}}], "bindings": {"exposure_usd": "$ref:$.waves.0.core.output.facts.exposure_usd"}}}
+        ]
+      },
+      "chunk_specs": {"rag": [{"rule_identity_id": 70, "confidence": 0.93, "rule_verdict": true, "claims": {"exposure_usd": 1000000}}]},
+      "expected": {
+        "canonical_facts": {"exposure_usd": 4200000},
+        "triggered_rule_ids": [121],
+        "conflicts": [{"key": "exposure_usd", "winning_tier": 1, "losing_tier": 3}],
+        "anomaly_kinds": [],
+        "ledger_size": 1
+      }
+    },
+    {
+      "id": "case_5_candidate_rule_low_confidence_abstention",
+      "description": "A CANDIDATE_300 rule (id 300) is retrieved with confidence 0.68 < 0.80. The orchestrator must emit a structured AbstainedClaim and assert nothing.",
+      "request": {"request_id": "tc-5", "query": "Does the staging concentration rule apply to ACME?"},
+      "plan": {
+        "request_id": "tc-5",
+        "zero_hop": false,
+        "rationale": "Retrieve candidate guidance.",
+        "nodes": [
+          {"task_id": "rag", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 800, "payload": {"query": "staging concentration rule", "family_ids": [2], "baseline_rules": [], "bindings": {}}}
+        ]
+      },
+      "chunk_specs": {"rag": [{"rule_identity_id": 300, "confidence": 0.68, "rule_verdict": true, "claims": {"concentration_limit_pct": 35}}]},
+      "expected": {
+        "triggered_rule_ids": [],
+        "abstained": [{"claim_id": "rag:300", "reason": "LOW_CONFIDENCE"}],
+        "conflicts": [],
+        "ledger_size": 0
+      }
+    },
+    {
+      "id": "case_6_out_of_bounds_rule_identity_612",
+      "description": "A rogue chunk carries rule_identity_id 612 (outside the 550-identity corpus). The provenance gate blocks it; a legitimate chunk in the same response is still honoured.",
+      "request": {"request_id": "tc-6", "query": "Which governance rules apply to the latest incident?"},
+      "plan": {
+        "request_id": "tc-6",
+        "zero_hop": false,
+        "rationale": "Retrieve governance guidance.",
+        "nodes": [
+          {"task_id": "rag", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 2, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 800, "payload": {"query": "incident escalation", "family_ids": [7], "baseline_rules": [], "bindings": {}}}
+        ]
+      },
+      "chunk_specs": {"rag": [
+        {"rule_identity_id": 612, "confidence": 0.99, "rule_verdict": true},
+        {"rule_identity_id": 57, "confidence": 0.9, "rule_verdict": true}
+      ]},
+      "expected": {
+        "triggered_rule_ids": [57],
+        "anomaly_kinds": ["OUT_OF_BOUNDS_RULE_IDENTITY"],
+        "ledger_size": 1,
+        "forbidden_rule_ids": [612]
+      }
+    },
+    {
+      "id": "case_7_cyclic_plan_rejected",
+      "description": "Planner emits A -> B -> C -> D -> B. Compilation must abort deterministically with the exact cycle path.",
+      "request": {"request_id": "tc-7", "query": "cyclic plan"},
+      "plan": {
+        "request_id": "tc-7",
+        "zero_hop": false,
+        "rationale": "Hostile plan.",
+        "nodes": [
+          {"task_id": "A", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 100, "payload": {}},
+          {"task_id": "B", "tool": "tool_core_compute", "dependencies": ["A", "D"], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 100, "payload": {}},
+          {"task_id": "C", "tool": "tool_core_compute", "dependencies": ["B"], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 100, "payload": {}},
+          {"task_id": "D", "tool": "tool_core_compute", "dependencies": ["C"], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 100, "payload": {}}
+        ]
+      },
+      "expected": {"error": "CyclicDependencyError", "cycle": ["B", "C", "D", "B"], "tool_calls": {"tool_core_compute": 0}}
+    },
+    {
+      "id": "case_8_core_compute_outage_hard_abort",
+      "description": "Tier 1 compute has no substitute: an outage on a HARD_ABORT node must abort the orchestration instead of degrading.",
+      "request": {"request_id": "tc-8", "query": "Current exposure for ACME?"},
+      "plan": {
+        "request_id": "tc-8",
+        "zero_hop": false,
+        "rationale": "Compute only.",
+        "nodes": [
+          {"task_id": "core", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 600, "payload": {"facts": {"exposure_usd": 1}}}
+        ]
+      },
+      "failures": [
+        {"tool": "tool_core_compute", "error": "RuntimeError", "replica": false},
+        {"tool": "tool_core_compute", "error": "RuntimeError", "replica": true}
+      ],
+      "expected": {"error": "HardAbortError"}
+    },
+    {
+      "id": "case_9_optional_node_failure_uses_ref_default",
+      "description": "An optional RAG node fails; its downstream ref falls back to the declared default, the AST still evaluates and the degraded service is reported.",
+      "request": {"request_id": "tc-9", "query": "Evaluate the baseline threshold with optional enrichment."},
+      "plan": {
+        "request_id": "tc-9",
+        "zero_hop": false,
+        "rationale": "Optional enrichment with default.",
+        "nodes": [
+          {"task_id": "core", "tool": "tool_core_compute", "dependencies": [], "timeout_ms": 800, "idempotent": true, "priority": 1, "failure_policy": "HARD_ABORT", "estimated_latency_ms": 400, "payload": {"facts": {"exposure_usd": 10}}},
+          {"task_id": "opt_rag", "tool": "tool_hybrid_rag", "dependencies": [], "timeout_ms": 900, "idempotent": true, "priority": 4, "failure_policy": "IGNORE_OPTIONAL", "estimated_latency_ms": 500, "payload": {"query": "optional enrichment", "family_ids": [2]}},
+          {"task_id": "ast", "tool": "tool_policy_ast", "dependencies": ["core", "opt_rag"], "timeout_ms": 600, "idempotent": true, "priority": 1, "failure_policy": "DEGRADE_WITH_FALLBACK", "estimated_latency_ms": 400, "payload": {"rules": [{"rule_identity_id": 90, "predicate": {"binding": "n", "op": ">=", "value": 0}}], "bindings": {"n": "$ref:$.waves.0.opt_rag.output.chunks.0.claims.n|default=0"}}}
+        ]
+      },
+      "failures": [
+        {"tool": "tool_hybrid_rag", "error": "RuntimeError", "replica": false},
+        {"tool": "tool_hybrid_rag", "error": "RuntimeError", "replica": true}
+      ],
+      "expected": {"triggered_rule_ids": [90], "degraded_services": ["tool_hybrid_rag"], "canonical_facts": {"exposure_usd": 10}}
+    }
+  ]
+}

@@ -1,0 +1,274 @@
+{
+  "skill_id": "dag_orchestrator_skill",
+  "name": "Delegate AI Subtasks Orchestrator",
+  "version": "1.0.0",
+  "description": "Compiles compound analytical queries into a validated DAG, enforces token and tail-latency budgets, dispatches subtasks over MCP, isolates non-blocking SLM shadow telemetry and synthesizes provenance-grounded, conflict-free answers.",
+  "protocol": {
+    "name": "model-context-protocol",
+    "transport": "pluggable (tools.mcp_router.MCPTransport)",
+    "contract_version": "1.0"
+  },
+  "schemas": {
+    "input": "tools/mcp_schemas.py#DAGPlanSchema",
+    "output": "tools/mcp_schemas.py#OrchestratorSynthesis",
+    "subtask": "tools/mcp_schemas.py#SubTaskNode",
+    "provenance": "tools/mcp_schemas.py#ProvenanceRecord"
+  },
+  "immutable_components": [
+    "CoreComputeEngine",
+    "BaseWorkspaceContainer",
+    "PolicyRuleAST",
+    "PROTECTED_BASELINE_RULES_50"
+  ],
+  "sla": {
+    "total_budget_ms": 3000,
+    "execution_ceiling_ms": 2600,
+    "synthesis_reserve_ms": 400,
+    "latency_percentiles_ms": {
+      "p50": 1400,
+      "p95": 3000,
+      "p99": 4200
+    }
+  },
+  "quality_gates": {
+    "deterministic_routing_coverage_min": 0.75,
+    "selective_accuracy_min": 0.85,
+    "ece_max": 0.1,
+    "ece_bins": 10,
+    "tau_abstain": 0.8
+  },
+  "corpus": {
+    "protected_baseline_rules": 50,
+    "active_rules": 200,
+    "candidate_rules": 300,
+    "total_identities": 550,
+    "id_ranges": {
+      "PROTECTED_50": [
+        1,
+        50
+      ],
+      "ACTIVE_200": [
+        51,
+        250
+      ],
+      "CANDIDATE_300": [
+        251,
+        550
+      ]
+    },
+    "policy_families": [
+      {
+        "id": 1,
+        "name": "Regulatory & Statutory Compliance"
+      },
+      {
+        "id": 2,
+        "name": "Quantitative Risk & Exposure Thresholds"
+      },
+      {
+        "id": 3,
+        "name": "SLA & Operational Resilience Governance"
+      },
+      {
+        "id": 4,
+        "name": "Identity, Security & Access Control"
+      },
+      {
+        "id": 5,
+        "name": "Financial Controls & Pricing Guardrails"
+      },
+      {
+        "id": 6,
+        "name": "Data Lineage, Retention & Privacy"
+      },
+      {
+        "id": 7,
+        "name": "Incident Escalation & Remediation Workflows"
+      }
+    ]
+  },
+  "dag_limits": {
+    "max_nodes": 64,
+    "max_waves": 6,
+    "priority_range": [
+      1,
+      5
+    ],
+    "prune_priority_threshold": 3
+  },
+  "context": {
+    "w_max_tokens": 4096,
+    "tokenizer": "ceil(chars/4)",
+    "priorities": {
+      "1": "pinned: Tier 1 compute telemetry, entity state, protected baseline rule outputs",
+      "2": "structural compression: verified Tier 3 RAG passages",
+      "3": "FIFO eviction first: historical conversational turns"
+    }
+  },
+  "shadow": {
+    "tool": "tool_slm_intent_shadow",
+    "mode": "non_blocking_fire_and_forget",
+    "timeout_ms": 1500,
+    "telemetry_sink": "slm_shadow_telemetry",
+    "user_visible": false
+  },
+  "tools": {
+    "tool_core_compute": {
+      "endpoint": "mcp://core-compute/v1",
+      "epistemic_tier": 1,
+      "default_timeout_ms": 800,
+      "idempotent": true,
+      "default_failure_policy": "HARD_ABORT",
+      "hedge_after_ms": 450,
+      "rate_limit": {
+        "rate_per_s": 200.0,
+        "burst": 64
+      },
+      "concurrency": {
+        "c_min": 2,
+        "c_max": 16,
+        "c_init": 6
+      },
+      "circuit_breaker": {
+        "consecutive_failures": 5,
+        "failure_rate_threshold": 0.4,
+        "window_s": 30.0,
+        "min_samples": 10,
+        "ewma_alpha": 0.3,
+        "ewma_trip_ms": 2200.0,
+        "base_backoff_s": 0.5,
+        "max_backoff_s": 15.0
+      }
+    },
+    "tool_policy_ast": {
+      "endpoint": "mcp://policy-ast/v1",
+      "epistemic_tier": 2,
+      "default_timeout_ms": 600,
+      "idempotent": true,
+      "default_failure_policy": "DEGRADE_WITH_FALLBACK",
+      "hedge_after_ms": 400,
+      "rate_limit": {
+        "rate_per_s": 200.0,
+        "burst": 64
+      },
+      "concurrency": {
+        "c_min": 2,
+        "c_max": 16,
+        "c_init": 6
+      },
+      "circuit_breaker": {
+        "consecutive_failures": 5,
+        "failure_rate_threshold": 0.4,
+        "window_s": 30.0,
+        "min_samples": 10,
+        "ewma_alpha": 0.3,
+        "ewma_trip_ms": 2200.0,
+        "base_backoff_s": 0.5,
+        "max_backoff_s": 15.0
+      }
+    },
+    "tool_hybrid_rag": {
+      "endpoint": "mcp://hybrid-rag/v1",
+      "epistemic_tier": 3,
+      "default_timeout_ms": 900,
+      "idempotent": true,
+      "default_failure_policy": "DEGRADE_WITH_FALLBACK",
+      "hedge_after_ms": 750,
+      "rate_limit": {
+        "rate_per_s": 50.0,
+        "burst": 20
+      },
+      "concurrency": {
+        "c_min": 1,
+        "c_max": 12,
+        "c_init": 4
+      },
+      "circuit_breaker": {
+        "consecutive_failures": 5,
+        "failure_rate_threshold": 0.4,
+        "window_s": 30.0,
+        "min_samples": 10,
+        "ewma_alpha": 0.3,
+        "ewma_trip_ms": 2200.0,
+        "base_backoff_s": 0.5,
+        "max_backoff_s": 15.0
+      }
+    },
+    "tool_slm_intent_shadow": {
+      "endpoint": "mcp://slm-intent-shadow/v1",
+      "epistemic_tier": null,
+      "default_timeout_ms": 1500,
+      "idempotent": true,
+      "default_failure_policy": "IGNORE_OPTIONAL",
+      "hedge_after_ms": null,
+      "rate_limit": {
+        "rate_per_s": 100.0,
+        "burst": 32
+      },
+      "concurrency": {
+        "c_min": 1,
+        "c_max": 8,
+        "c_init": 4
+      },
+      "circuit_breaker": {
+        "consecutive_failures": 5,
+        "failure_rate_threshold": 0.4,
+        "window_s": 30.0,
+        "min_samples": 10,
+        "ewma_alpha": 0.3,
+        "ewma_trip_ms": 2200.0,
+        "base_backoff_s": 0.5,
+        "max_backoff_s": 15.0
+      }
+    }
+  },
+  "fallback_topology": {
+    "tool_hybrid_rag": {
+      "fallback_tool": "tool_policy_ast",
+      "payload_scope": "PROTECTED_50",
+      "payload_source": "node.payload.baseline_rules",
+      "marks_service_degraded": true
+    },
+    "tool_policy_ast": {
+      "fallback_tool": null,
+      "marks_service_degraded": true
+    },
+    "tool_core_compute": {
+      "fallback_tool": null,
+      "marks_service_degraded": true
+    },
+    "tool_slm_intent_shadow": {
+      "fallback_tool": null,
+      "marks_service_degraded": false
+    }
+  },
+  "prompts": {
+    "task_decomposition": "reference/prompts/task_decomposition.md",
+    "conflict_synthesis": "reference/prompts/conflict_synthesis.md"
+  },
+  "doctrine": "reference/guidelines.md",
+  "evals": {
+    "rubric": "evals/rubric.md",
+    "test_cases": "evals/test_cases.json",
+    "red_team": "evals/red_team_modes.py",
+    "harness": "evals/judges.py"
+  },
+  "skill_manifest": "Skill.md",
+  "mcp_resources": {
+    "orchestrator://reference/guidelines": {
+      "file": "reference/guidelines.md",
+      "mime_type": "text/markdown",
+      "read_only": true
+    },
+    "orchestrator://reference/prompts/task_decomposition": {
+      "file": "reference/prompts/task_decomposition.md",
+      "mime_type": "text/markdown",
+      "read_only": true
+    },
+    "orchestrator://reference/prompts/conflict_synthesis": {
+      "file": "reference/prompts/conflict_synthesis.md",
+      "mime_type": "text/markdown",
+      "read_only": true
+    }
+  }
+}
