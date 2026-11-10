@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Remove Python 2.7 and 3.0-3.3 support and features in the future, so we can ignore these files.
+features/
+
 # C extensions
 *.so
 
@@ -218,3 +221,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
